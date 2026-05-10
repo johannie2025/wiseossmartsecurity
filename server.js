@@ -91,6 +91,16 @@ async function saveSessionToDB(tenantId, creds) {
 // ====================== KEEP-ALIVE + CLEANUP ======================
 setInterval(() => console.log(`[KEEP-ALIVE] Wise OS v3.1 • ${new Date().toISOString()}`), 4 * 60 * 1000);
 
+// Fonction pour envoyer des messages SSE à tous les clients connectés d'un tenant
+function broadcastSSE(tenantId, data) {
+  const clients = sseClients.get(String(tenantId));
+  if (clients) {
+    clients.forEach(client => {
+      client.write(`data: ${JSON.stringify(data)}\n\n`);
+    });
+  }
+}
+
 // ====================== WHATSAPP ======================
 async function connectWhatsApp(tenantId) {
   if (sessions.has(tenantId)) {
