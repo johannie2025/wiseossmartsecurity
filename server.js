@@ -1,5 +1,5 @@
 /**
- * WISE OS UNIFIED — server.js v3.3.0
+ * WISE OS UNIFIED — server.js v3.3.1
  * Architecture Robuste : WhatsApp + Email + MySQL + Dashboard
  */
 
@@ -47,7 +47,7 @@ const pool = mysql.createPool({
   password: process.env.DB_PASS,
   database: process.env.DB_NAME,
   waitForConnections: true,
-  connectionLimit: 15,
+  connectionLimit: 10,
   connectTimeout: 30000
 });
 
@@ -120,7 +120,7 @@ async function connectWhatsApp(tenantId) {
     }
     if (connection === "close") {
       const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-      if (shouldReconnect) setTimeout(() => connectWhatsApp(tid), 10000);
+      if (shouldReconnect) setTimeout(() => connectWhatsApp(tid), 12000);
     }
   });
 }
@@ -130,7 +130,7 @@ function broadcastSSE(tenantId, data) {
   if (clients) clients.forEach(c => c.write(`data: ${JSON.stringify(data)}\n\n`));
 }
 
-// ====================== API ROUTES ======================
+// ====================== SERVER START ======================
 async function startServer() {
   const app = express();
   app.use(cors());
@@ -142,7 +142,13 @@ async function startServer() {
     next();
   };
 
-  // Route OTP (WhatsApp + Email Fallback)
+  // Route Dashboard
+  app.get("/", (req, res) => {
+    res.send(`<h1>🛡️ Wise OS Unified Dashboard</h1><p>Service is Live.</p><p>Go to /connect to scan QR.</p>`);
+  });
+
+  app.get("/health", (_, res) => res.json({ status: "ok", port: PORT }));
+
   app.post("/generate-otp", auth, async (req, res) => {
     const { phone, email, tenant_id = 1, lang = "fr" } = req.body;
     const code = String(Math.floor(100000 + Math.random() * 900000));
@@ -154,7 +160,6 @@ async function startServer() {
         [tenant_id, phone || email, code, new Date(Date.now() + 600000)]
       );
 
-      // Envoi WhatsApp
       let waSent = false;
       const sd = sessions.get(String(tenant_id));
       if (sd?.status === "connected" && phone) {
@@ -163,27 +168,12 @@ async function startServer() {
         waSent = true;
       }
 
-      // Envoi Email si WhatsApp échoue ou si email fourni
       if (!waSent && email) {
         await mailer.sendMail({ from: process.env.SMTP_USER, to: email, subject: "Code Wise OS", text: msg });
       }
 
-      res.json({ success: true, method: waSent ? "whatsapp" : "email" });
+      res.json({ success: true, method: waSent ? "whatsapp" : "email", code: (process.env.NODE_ENV !== 'production' ? code : undefined) });
     } catch (e) { res.status(500).json({ error: e.message }); }
-  });
-
-  // Route Validation OTP
-  app.post("/validate-otp", auth, async (req, res) => {
-    const { recipient, code, tenant_id = 1 } = req.body;
-    const [rows] = await pool.execute(
-      "SELECT id FROM otp_codes WHERE tenant_id=? AND recipient=? AND code=? AND used=0 AND expires_at > NOW()",
-      [tenant_id, recipient, code]
-    );
-    if (rows.length) {
-      await pool.execute("UPDATE otp_codes SET used=1 WHERE id=?", [rows[0].id]);
-      return res.json({ valid: true });
-    }
-    res.status(401).json({ valid: false });
   });
 
   app.get("/connect", (req, res) => {
@@ -196,5 +186,11 @@ async function startServer() {
     req.on("close", () => sseClients.get(tid)?.delete(res));
   });
 
-  app.listen(PORT, () => console.log(`🚀 Wise OS v3.3.0 sur port ${PORT}`));
+  // Lancement effectif
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Serveur actif sur port ${PORT}`);
+    setTimeout(() => {
+        connectWhatsApp(1).catch(err => console.log("Attente DB..."));
+    }, 5000);
+  });
 }
