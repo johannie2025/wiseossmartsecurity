@@ -102,9 +102,17 @@ function broadcastSSE(tenantId, data) {
 }
 
 // ====================== WHATSAPP ======================
-async function connectWhatsApp(tenantId) {
+sync function connectWhatsApp(tenantId) {
   if (sessions.has(tenantId)) {
-    sessions.get(tenantId).sock?.end().catch(() => {});
+    const existing = sessions.get(tenantId);
+    if (existing && existing.sock) {
+      // Correction : on utilise un bloc try/catch simple au lieu de .catch()
+      try { 
+        existing.sock.end(); 
+      } catch (e) {
+        console.log("Session déjà fermée");
+      }
+    }
     sessions.delete(tenantId);
   }
 
