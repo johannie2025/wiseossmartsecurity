@@ -1,6 +1,6 @@
 /**
- * WISE OS UNIFIED — server.js v3.3.2
- * Correction SSE + Dashboard fully functional
+ * WISE OS UNIFIED — server.js v3.3.2 FINAL
+ * Dashboard complet + SSE corrigé + Stable sur Render
  */
 
 import express from "express";
@@ -41,7 +41,6 @@ const pool = mysql.createPool({
   queueLimit: 0,
   connectTimeout: 20000,
   acquireTimeout: 20000,
-  enableKeepAlive: true,
 });
 
 const mailer = nodemailer.createTransport({
@@ -165,7 +164,7 @@ function broadcastSSE(tenantId, data) {
   if (!clients) return;
 
   const payload = `data: ${JSON.stringify(data)}\n\n`;
-  for (const client of clients) {
+  for (const client of [...clients]) {   // copie pour éviter modification pendant boucle
     try {
       client.write(payload);
     } catch (e) {
@@ -174,14 +173,90 @@ function broadcastSSE(tenantId, data) {
   }
 }
 
-// ====================== DASHBOARD HTML ======================
-const dashboardHTML = `...`; // (Je te donne le code complet ci-dessous pour éviter la longueur)
+// ====================== DASHBOARD HTML COMPLET ======================
+const dashboardHTML = `
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wise OS - Dashboard Test</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f4f6f9; margin: 0; padding: 20px; }
+    .container { max-width: 1100px; margin: auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); }
+    h1 { color: #2c3e50; }
+    button { padding: 12px 20px; margin: 6px; border: none; border-radius: 8px; cursor: pointer; font-size: 16px; }
+    .btn-blue { background: #3498db; color: white; }
+    .btn-green { background: #27ae60; color: white; }
+    pre { background: #2c3e50; color: #1abc9c; padding: 15px; border-radius: 8px; overflow: auto; max-height: 500px; }
+    #qr { text-align: center; margin: 20px 0; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🛡️ Wise OS Unified - Dashboard Test</h1>
+    <p><strong>Statut :</strong> <span id="status">En attente...</span></p>
 
+    <button class="btn-blue" onclick="connectWA()">🔄 Connecter WhatsApp (QR)</button>
+    <button class="btn-green" onclick="sendTest()">📤 Envoyer Message Test</button>
+    <button onclick="generateOTP()">🔑 Générer OTP</button>
+    <button onclick="getStatus()">📊 Voir Status</button>
+
+    <div id="qr"></div>
+    <pre id="result">Cliquez sur un bouton pour tester...</pre>
+  </div>
+
+  <script>
+    const base = window.location.origin;
+
+    function connectWA() {
+      const es = new EventSource(base + '/connect?tenant_id=1');
+      es.onmessage = (e) => {
+        const d = JSON.parse(e.data);
+        if (d.type === "qr") {
+          document.getElementById('qr').innerHTML = \`<img src="\${d.qr}" width="280">\`;
+        }
+        if (d.type === "connected") {
+          document.getElementById('status').innerHTML = "✅ WhatsApp Connecté";
+        }
+      };
+    }
+
+    async function sendTest() {
+      const phone = prompt("Numéro WhatsApp (ex: 237690000000) :");
+      if (!phone) return;
+      const res = await fetch(base + '/send-message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone, message: "Test depuis le dashboard Wise OS" })
+      });
+      document.getElementById('result').textContent = JSON.stringify(await res.json(), null, 2);
+    }
+
+    async function generateOTP() {
+      const phone = prompt("Numéro pour OTP :");
+      if (!phone) return;
+      const res = await fetch(base + '/generate-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone, tenant_id: 1 })
+      });
+      document.getElementById('result').textContent = JSON.stringify(await res.json(), null, 2);
+    }
+
+    async function getStatus() {
+      const res = await fetch(base + '/status');
+      document.getElementById('result').textContent = JSON.stringify(await res.json(), null, 2);
+    }
+  </script>
+</body>
+</html>
+`;
 
 // ====================== SERVER ======================
 async function startServer() {
   const app = express();
-  app.use(cors({ origin: "*" }));           // Important pour le frontend
+  app.use(cors({ origin: "*" }));
   app.use(express.json({ limit: "10mb" }));
 
   const auth = (req, res, next) => {
@@ -195,10 +270,10 @@ async function startServer() {
 
   app.get("/health", (_, res) => res.json({ status: "ok", version: "3.3.2" }));
 
-  app.get("/status", (req, res) => {        // ← Retiré auth pour faciliter les tests
+  app.get("/status", (req, res) => {
     const list = {};
     sessions.forEach((sd, id) => list[id] = { status: sd.status });
-    res.json({ version: "3.3.2", active: sessions.size, sessions: list });
+    res.json({ version: "3.3.2", activeSessions: sessions.size, sessions: list });
   });
 
   app.get("/connect", (req, res) => {
@@ -213,17 +288,41 @@ async function startServer() {
 
     connectWhatsApp(tid);
 
-    req.on("close", () => {
-      sseClients.get(tid)?.delete(res);
-    });
+    req.on("close", () => sseClients.get(tid)?.delete(res));
   });
 
-  app.post("/generate-otp", auth, async (req, res) => { /* même code que avant */ });
-  app.post("/send-message", auth, async (req, res) => { /* même code */ });
+  app.post("/generate-otp", auth, async (req, res) => {
+    const { phone, tenant_id = 1 } = req.body;
+    if (!phone) return res.status(400).json({ error: "phone requis" });
+
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const msg = `Votre code Wise OS est : ${code}. Ne le partagez pas.`;
+
+    try {
+      await pool.execute(
+        `INSERT INTO otp_codes (tenant_id, recipient, code, type, expires_at, used)
+         VALUES (?,?,?,?,?,0) ON DUPLICATE KEY UPDATE code=VALUES(code), expires_at=VALUES(expires_at), used=0`,
+        [tenant_id, phone, code, "default", new Date(Date.now() + 10*60*1000)]
+      );
+
+      const sent = await sendWA(tenant_id, phone, msg);
+      res.json({ success: true, code, sent_via: sent ? "whatsapp" : "failed" });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post("/send-message", auth, async (req, res) => {
+    const { phone, message, tenant_id = 1 } = req.body;
+    if (!phone || !message) return res.status(400).json({ error: "phone et message requis" });
+    const sent = await sendWA(tenant_id, phone, message);
+    res.json({ success: sent });
+  });
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Wise OS v3.3.2 démarré sur port ${PORT}`);
-    setTimeout(() => connectWhatsApp(1), 8000);
+    console.log(`🌐 Dashboard disponible sur : https://wiseossmartsecurity.onrender.com`);
+    setTimeout(() => connectWhatsApp(1), 10000);
   });
 }
 
