@@ -27,7 +27,9 @@ let makeWASocket, useMultiFileAuthState, DisconnectReason, delay;
 // ====================== CONFIG ======================
 const PORT = process.env.PORT || 10000;
 const API_KEY = process.env.NODE_API_KEY;
-const PHP_BACKEND = "https://wisedesign.pro/wiseos/db.php";   // ← À modifier si nécessaire
+// Configuration corrigée
+const PHP_BACKEND = process.env.PHP_BACKEND_URL 
+    || "https://wisedesign.pro/wiseos/lib/";   // Important : termine par /    // ← À modifier si nécessaire
 
 const logger = pino({ level: 'silent' });
 
@@ -40,7 +42,9 @@ if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true });
 // ====================== PROXY PHP ======================
 async function phpRequest(endpoint, payload = {}) {
   try {
-    const res = await fetch(PHP_BACKEND + endpoint, {
+    const url = PHP_BACKEND.replace(/\/$/, '') + '/' + endpoint.replace(/^\//, '');
+    
+    const res = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -48,7 +52,13 @@ async function phpRequest(endpoint, payload = {}) {
       },
       body: JSON.stringify(payload)
     });
-    return await res.json();
+
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+
+    const data = await res.json();
+    return data;
   } catch (e) {
     console.error(`[PHP Proxy ${endpoint}]`, e.message);
     return { success: false, error: e.message };
