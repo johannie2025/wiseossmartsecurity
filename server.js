@@ -27,7 +27,7 @@ let makeWASocket, useMultiFileAuthState, DisconnectReason, delay;
 // ====================== CONFIG ======================
 const PORT = process.env.PORT || 10000;
 const API_KEY = process.env.NODE_API_KEY;
-const PHP_BACKEND = "https://wisedesign.pro/wiseos/lib/";   // ← À modifier si nécessaire
+const PHP_BACKEND = "https://wisedesign.pro/wiseos/lib/db.php";   // ← À modifier si nécessaire
 
 const logger = pino({ level: 'silent' });
 
