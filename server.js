@@ -44,7 +44,6 @@ const AUTH_DIR = './wa_auth';
 if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true });
 
 // ====================== PROXY PHP ======================
-// ====================== PROXY PHP ======================
 async function phpRequest(endpoint, payload = {}) {
   try {
     const base = PHP_BACKEND.replace(/\/$/, '');
@@ -62,15 +61,14 @@ async function phpRequest(endpoint, payload = {}) {
       body: JSON.stringify(payload)
     });
 
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status} - ${res.statusText}`);
-    }
+    console.log(`[PHP Proxy] Status: ${res.status}`);
 
-    const data = await res.json();
-    console.log(`[PHP Proxy] ← ${endpoint} :`, data.success ? 'OK' : 'ERROR');
-    return data;
+    const text = await res.text();
+    console.log(`[PHP Proxy] Raw response: ${text.substring(0, 300)}...`);
+
+    return JSON.parse(text);
   } catch (e) {
-    console.error(`[PHP Proxy ${endpoint}] FAILED:`, e.message);
+    console.error(`[PHP Proxy ${endpoint}] ERROR:`, e.message);
     return { success: false, error: e.message };
   }
 }
