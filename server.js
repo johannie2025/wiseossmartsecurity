@@ -29,7 +29,7 @@ const PORT = process.env.PORT || 10000;
 const API_KEY = process.env.NODE_API_KEY;
 // Configuration corrigée
 const PHP_BACKEND = process.env.PHP_BACKEND_URL 
-    || "https://wisedesign.pro/wiseos/lib/";   // Important : termine par /    // ← À modifier si nécessaire
+    || "https://wisedesign.pro/wiseos/";   // Important : termine par /    // ← À modifier si nécessaire
 
 const logger = pino({ level: 'silent' });
 
