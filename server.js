@@ -74,21 +74,62 @@ async function phpRequest(endpoint, payload = {}) {
 }
 
 // ====================== DB PROXY ======================
-async function saveOTP(tenantId, phone, code, type = "default") {
-  return phpRequest('db.php', { action: 'save_otp', tenant_id: tenantId, recipient: phone, code, type });
+// async function saveOTP(tenantId, phone, code, type = "default") {
+  // return phpRequest('db.php', { action: 'save_otp', tenant_id: tenantId, recipient: phone, code, type });
+// }
+
+// async function validateOTPFromDB(tenantId, phone, code, type = "default") {
+  // return phpRequest('db.php', { action: 'validate_otp', tenant_id: tenantId, recipient: phone, code, type });
+// }
+
+// async function loadSessionFromDB(tenantId) {
+  // const res = await phpRequest('db.php', { action: 'load_session', tenant_id: tenantId });
+  // return res.success && res.data ? res.data : null;
+// }
+
+// async function saveSessionToDB(tenantId, creds) {
+  // await phpRequest('db.php', { action: 'save_session', tenant_id: tenantId, session_data: creds });
+// }
+
+// Remplace les anciennes fonctions DB Proxy
+import { saveOTP, validateOTP, loadSession, saveSession } from './core/db.js';
+
+// ====================== DB DIRECT (Prioritaire) ======================
+async function saveOTPDirect(tenantId, phone, code, type = "default") {
+  try {
+    return await saveOTP(tenantId, phone, code, type);
+  } catch (e) {
+    console.warn('[DB Direct] Failed, trying PHP fallback');
+    return phpRequest('db.php', { action: 'save_otp', tenant_id: tenantId, recipient: phone, code, type });
+  }
 }
 
-async function validateOTPFromDB(tenantId, phone, code, type = "default") {
-  return phpRequest('db.php', { action: 'validate_otp', tenant_id: tenantId, recipient: phone, code, type });
+async function validateOTPDirect(tenantId, phone, code, type = "default") {
+  try {
+    return await validateOTP(tenantId, phone, code, type);
+  } catch (e) {
+    console.warn('[DB Direct] Failed, trying PHP fallback');
+    return phpRequest('db.php', { action: 'validate_otp', tenant_id: tenantId, recipient: phone, code, type });
+  }
 }
 
 async function loadSessionFromDB(tenantId) {
-  const res = await phpRequest('db.php', { action: 'load_session', tenant_id: tenantId });
-  return res.success && res.data ? res.data : null;
+  try {
+    return await loadSession(tenantId);
+  } catch (e) {
+    console.warn('[DB Direct] Failed, trying PHP fallback');
+    const res = await phpRequest('db.php', { action: 'load_session', tenant_id: tenantId });
+    return res.success && res.data ? res.data : null;
+  }
 }
 
 async function saveSessionToDB(tenantId, creds) {
-  await phpRequest('db.php', { action: 'save_session', tenant_id: tenantId, session_data: creds });
+  try {
+    await saveSession(tenantId, creds);
+  } catch (e) {
+    console.warn('[DB Direct] Failed, trying PHP fallback');
+    await phpRequest('db.php', { action: 'save_session', tenant_id: tenantId, session_data: creds });
+  }
 }
 
 // ====================== WHATSAPP ======================
