@@ -1,6 +1,6 @@
 /**
  * WISE OS UNIFIED — server.js v3.3.5 FINAL
- * Toutes les routes du Dashboard + Proxy PHP complet
+ * Direct MySQL + PHP Proxy Fallback
  */
 
 import express    from "express";
@@ -9,46 +9,105 @@ import qrcode     from "qrcode";
 import dotenv     from "dotenv";
 import fs         from "fs";
 import pino       from "pino";
+import mysql      from 'mysql2/promise';
 import { dashboardHTML } from "./dashboard.js";
 
 dotenv.config();
 
 let makeWASocket, useMultiFileAuthState, DisconnectReason, delay;
 
-(async () => {
-  const baileys = await import("@whiskeysockets/baileys");
-  makeWASocket = baileys.default;
-  useMultiFileAuthState = baileys.useMultiFileAuthState;
-  DisconnectReason = baileys.DisconnectReason;
-  delay = baileys.delay;
-  startServer();
-})();
-
-// ====================== CONFIG ======================
 // ====================== CONFIG ======================
 const PORT = process.env.PORT || 10000;
 const API_KEY = process.env.NODE_API_KEY;
-
-// Configuration PHP (utilise la variable d'environnement ou la config par défaut)
-const PHP_BACKEND = process.env.PHP_BACKEND_URL 
-    || "https://wisedesign.pro/wiseos/";   // ← Doit pointer vers le dossier contenant db.php
+const PHP_BACKEND = process.env.PHP_BACKEND_URL || "https://wisedesign.pro/wiseos/";
 
 console.log(`[INFO] PHP Backend URL: ${PHP_BACKEND}`);
 
-const logger = pino({ level: 'silent' });
+// ====================== DIRECT DB (mysql2) ======================
+let dbPool = null;
 
-const sessions = new Map();
-const sseClients = new Map();
+async function initDB() {
+  try {
+    dbPool = mysql.createPool({
+      host: process.env.DB_HOST,
+      user: process.env.DB_USER,
+      password: process.env.DB_PASS,
+      database: process.env.DB_NAME,
+      waitForConnections: true,
+      connectionLimit: 8,
+      queueLimit: 0,
+      connectTimeout: 15000,
+    });
+    console.log("✅ [DB Direct] Pool MySQL initialisé avec succès");
+  } catch (e) {
+    console.error("❌ [DB Direct] Échec d'initialisation:", e.message);
+  }
+}
 
-const AUTH_DIR = './wa_auth';
-if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true });
+async function dbQuery(sql, params = []) {
+  if (!dbPool) throw new Error("DB Pool non initialisé");
+  const [rows] = await dbPool.execute(sql, params);
+  return rows;
+}
 
-// ====================== PROXY PHP ======================
+// ====================== DB FUNCTIONS (Direct + Fallback) ======================
+async function saveOTP(tenantId, phone, code, type = "default") {
+  try {
+    const sql = `INSERT INTO otp_codes (tenant_id, recipient, code, type, expires_at, used)
+                 VALUES (?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 10 MINUTE), 0)
+                 ON DUPLICATE KEY UPDATE code=VALUES(code), expires_at=VALUES(expires_at), used=0`;
+    await dbQuery(sql, [tenantId, phone, code, type]);
+    return true;
+  } catch (e) {
+    console.warn(`[DB Direct] saveOTP failed → PHP fallback`);
+    return phpRequest('db.php', { action: 'save_otp', tenant_id: tenantId, recipient: phone, code, type });
+  }
+}
+
+async function validateOTPFromDB(tenantId, phone, code, type = "default") {
+  try {
+    const sql = `SELECT id FROM otp_codes WHERE tenant_id=? AND recipient=? AND code=? AND type=? 
+                 AND used=0 AND expires_at > NOW() LIMIT 1`;
+    const rows = await dbQuery(sql, [tenantId, phone, code, type]);
+    if (rows.length > 0) {
+      await dbQuery("UPDATE otp_codes SET used=1 WHERE id=?", [rows[0].id]);
+      return { valid: true };
+    }
+    return { valid: false };
+  } catch (e) {
+    console.warn(`[DB Direct] validateOTP failed → PHP fallback`);
+    return phpRequest('db.php', { action: 'validate_otp', tenant_id: tenantId, recipient: phone, code, type });
+  }
+}
+
+async function loadSessionFromDB(tenantId) {
+  try {
+    const rows = await dbQuery("SELECT session_data FROM whatsapp_sessions WHERE tenant_id = ? LIMIT 1", [tenantId]);
+    return rows.length ? JSON.parse(rows[0].session_data) : null;
+  } catch (e) {
+    console.warn(`[DB Direct] loadSession failed → PHP fallback`);
+    const res = await phpRequest('db.php', { action: 'load_session', tenant_id: tenantId });
+    return res.success && res.data ? res.data : null;
+  }
+}
+
+async function saveSessionToDB(tenantId, creds) {
+  try {
+    const data = JSON.stringify(creds);
+    await dbQuery(`INSERT INTO whatsapp_sessions (tenant_id, session_data) 
+                   VALUES (?, ?) ON DUPLICATE KEY UPDATE session_data = VALUES(session_data)`, 
+                  [tenantId, data]);
+  } catch (e) {
+    console.warn(`[DB Direct] saveSession failed → PHP fallback`);
+    await phpRequest('db.php', { action: 'save_session', tenant_id: tenantId, session_data: creds });
+  }
+}
+
+// ====================== PHP PROXY (Fallback) ======================
 async function phpRequest(endpoint, payload = {}) {
   try {
     const base = PHP_BACKEND.replace(/\/$/, '');
-    const cleanEndpoint = endpoint.replace(/^\//, '');
-    const url = `${base}/${cleanEndpoint}`;
+    const url = `${base}/${endpoint.replace(/^\//, '')}`;
 
     console.log(`[PHP Proxy] → ${url}`);
 
@@ -61,78 +120,28 @@ async function phpRequest(endpoint, payload = {}) {
       body: JSON.stringify(payload)
     });
 
-    console.log(`[PHP Proxy] Status: ${res.status}`);
-
     const text = await res.text();
-    console.log(`[PHP Proxy] Raw response: ${text.substring(0, 300)}...`);
-
-    return JSON.parse(text);
+    let data;
+    try { data = JSON.parse(text); } catch { data = { success: false, raw: text }; }
+    console.log(`[PHP Proxy] ← ${endpoint} | Status: ${res.status}`);
+    return data;
   } catch (e) {
-    console.error(`[PHP Proxy ${endpoint}] ERROR:`, e.message);
+    console.error(`[PHP Proxy ${endpoint}] FAILED:`, e.message);
     return { success: false, error: e.message };
   }
 }
 
-// ====================== DB PROXY ======================
-// async function saveOTP(tenantId, phone, code, type = "default") {
-  // return phpRequest('db.php', { action: 'save_otp', tenant_id: tenantId, recipient: phone, code, type });
-// }
-
-// async function validateOTPFromDB(tenantId, phone, code, type = "default") {
-  // return phpRequest('db.php', { action: 'validate_otp', tenant_id: tenantId, recipient: phone, code, type });
-// }
-
-// async function loadSessionFromDB(tenantId) {
-  // const res = await phpRequest('db.php', { action: 'load_session', tenant_id: tenantId });
-  // return res.success && res.data ? res.data : null;
-// }
-
-// async function saveSessionToDB(tenantId, creds) {
-  // await phpRequest('db.php', { action: 'save_session', tenant_id: tenantId, session_data: creds });
-// }
-
-// Remplace les anciennes fonctions DB Proxy
-import { saveOTP, validateOTP, loadSession, saveSession } from './core/db.js';
-
-// ====================== DB DIRECT (Prioritaire) ======================
-async function saveOTPDirect(tenantId, phone, code, type = "default") {
-  try {
-    return await saveOTP(tenantId, phone, code, type);
-  } catch (e) {
-    console.warn('[DB Direct] Failed, trying PHP fallback');
-    return phpRequest('db.php', { action: 'save_otp', tenant_id: tenantId, recipient: phone, code, type });
-  }
-}
-
-async function validateOTPDirect(tenantId, phone, code, type = "default") {
-  try {
-    return await validateOTP(tenantId, phone, code, type);
-  } catch (e) {
-    console.warn('[DB Direct] Failed, trying PHP fallback');
-    return phpRequest('db.php', { action: 'validate_otp', tenant_id: tenantId, recipient: phone, code, type });
-  }
-}
-
-async function loadSessionFromDB(tenantId) {
-  try {
-    return await loadSession(tenantId);
-  } catch (e) {
-    console.warn('[DB Direct] Failed, trying PHP fallback');
-    const res = await phpRequest('db.php', { action: 'load_session', tenant_id: tenantId });
-    return res.success && res.data ? res.data : null;
-  }
-}
-
-async function saveSessionToDB(tenantId, creds) {
-  try {
-    await saveSession(tenantId, creds);
-  } catch (e) {
-    console.warn('[DB Direct] Failed, trying PHP fallback');
-    await phpRequest('db.php', { action: 'save_session', tenant_id: tenantId, session_data: creds });
-  }
-}
-
 // ====================== WHATSAPP ======================
+const logger = pino({ level: 'silent' });
+const sessions = new Map();
+const sseClients = new Map();
+const AUTH_DIR = './wa_auth';
+
+if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true });
+
+// ... (Tout le reste de ton code WhatsApp reste identique : connectWhatsApp, sendWA, broadcastSSE, etc.)
+// Je te le remets complet ci-dessous pour éviter toute coupure.
+
 async function connectWhatsApp(tenantId) {
   const tid = String(tenantId || 1);
   if (sessions.has(tid)) {
@@ -222,7 +231,7 @@ async function startServer() {
   };
 
   app.get("/", (_, res) => res.send(dashboardHTML));
-  app.get("/health", (_, res) => res.json({ status: "ok", version: "3.3.5", mode: "php_proxy" }));
+  app.get("/health", (_, res) => res.json({ status: "ok", version: "3.3.5", mode: "direct_db" }));
   app.get("/status", (_, res) => {
     const list = {};
     sessions.forEach((sd, id) => list[id] = { status: sd.status });
@@ -243,9 +252,9 @@ async function startServer() {
     req.on("close", () => sseClients.get(tid)?.delete(res));
   });
 
-  // ====================== TOUTES LES ROUTES DU DASHBOARD ======================
+  // ====================== ROUTES DASHBOARD ======================
   app.post("/generate-otp", auth, async (req, res) => {
-    const { phone, tenant_id = 1, type = "default", ref_name = "" } = req.body;
+    const { phone, tenant_id = 1, type = "default" } = req.body;
     if (!phone) return res.status(400).json({ error: "phone requis" });
 
     const code = String(Math.floor(100000 + Math.random() * 900000));
@@ -270,6 +279,7 @@ async function startServer() {
     res.json({ success: sent });
   });
 
+  // Autres routes conservées
   app.post("/send-magic", auth, async (req, res) => {
     const { email, link, name = "" } = req.body;
     if (!email || !link) return res.status(400).json({ error: "email et link requis" });
@@ -298,7 +308,7 @@ async function startServer() {
   });
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Wise OS v3.3.5 FULL (PHP Proxy) démarré sur port ${PORT}`);
+    console.log(`🚀 Wise OS v3.3.5 FULL démarré sur port ${PORT}`);
     setTimeout(() => connectWhatsApp(1), 10000);
   });
 }
