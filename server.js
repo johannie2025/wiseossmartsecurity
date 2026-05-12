@@ -25,11 +25,15 @@ let makeWASocket, useMultiFileAuthState, DisconnectReason, delay;
 })();
 
 // ====================== CONFIG ======================
+// ====================== CONFIG ======================
 const PORT = process.env.PORT || 10000;
 const API_KEY = process.env.NODE_API_KEY;
-// Configuration corrigée
+
+// Configuration PHP (utilise la variable d'environnement ou la config par défaut)
 const PHP_BACKEND = process.env.PHP_BACKEND_URL 
-    || "https://wisedesign.pro/wiseos/";   // Important : termine par /    // ← À modifier si nécessaire
+    || "https://wisedesign.pro/wiseos/";   // ← Doit pointer vers le dossier contenant db.php
+
+console.log(`[INFO] PHP Backend URL: ${PHP_BACKEND}`);
 
 const logger = pino({ level: 'silent' });
 
@@ -40,10 +44,15 @@ const AUTH_DIR = './wa_auth';
 if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true });
 
 // ====================== PROXY PHP ======================
+// ====================== PROXY PHP ======================
 async function phpRequest(endpoint, payload = {}) {
   try {
-    const url = PHP_BACKEND.replace(/\/$/, '') + '/' + endpoint.replace(/^\//, '');
-    
+    const base = PHP_BACKEND.replace(/\/$/, '');
+    const cleanEndpoint = endpoint.replace(/^\//, '');
+    const url = `${base}/${cleanEndpoint}`;
+
+    console.log(`[PHP Proxy] → ${url}`);
+
     const res = await fetch(url, {
       method: 'POST',
       headers: {
@@ -54,13 +63,14 @@ async function phpRequest(endpoint, payload = {}) {
     });
 
     if (!res.ok) {
-      throw new Error(`HTTP ${res.status}`);
+      throw new Error(`HTTP ${res.status} - ${res.statusText}`);
     }
 
     const data = await res.json();
+    console.log(`[PHP Proxy] ← ${endpoint} :`, data.success ? 'OK' : 'ERROR');
     return data;
   } catch (e) {
-    console.error(`[PHP Proxy ${endpoint}]`, e.message);
+    console.error(`[PHP Proxy ${endpoint}] FAILED:`, e.message);
     return { success: false, error: e.message };
   }
 }
