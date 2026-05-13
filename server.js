@@ -1,6 +1,7 @@
 /**
- * WISE OS UNIFIED — server.js v3.3.5 FULL COMPLETE
- * Toutes les fonctionnalités restaurées
+ * WISE OS UNIFIED — server.js v3.3.5 FULL EXHAUSTIVE
+ * Toutes les fonctionnalités + Nodemailer + Baileys + PHP Proxy (/lib/db)
+ * Optimisé Render (port detection + keep-alive)
  */
 
 import express    from "express";
@@ -49,8 +50,8 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-// ====================== PHP PROXY ======================
-async function phpRequest(endpoint, payload = {}) {
+// ====================== PHP PROXY (aligné avec index.php) ======================
+async function phpRequest(payload = {}) {
   try {
     const url = `${PHP_BACKEND.replace(/\/$/, '')}/lib/db`;
     const res = await fetch(url, {
@@ -64,24 +65,27 @@ async function phpRequest(endpoint, payload = {}) {
     const text = await res.text();
     try { return JSON.parse(text); } catch { return { success: false, raw: text }; }
   } catch (e) {
-    console.error(`[PHP Proxy] ${payload.action || 'unknown'}:`, e.message);
+    console.error(`[PHP Proxy] Error:`, e.message);
     return { success: false, error: e.message };
   }
 }
 
-// DB Functions
-async function saveOTP(t, p, c, type="default") { 
-  return phpRequest('', { action: 'save_otp', tenant_id: t, recipient: p, code: c, type }); 
+// ====================== DB FUNCTIONS ======================
+async function saveOTP(tenantId, phone, code, type = "default") {
+  return phpRequest({ action: 'save_otp', tenant_id: tenantId, recipient: phone, code, type });
 }
-async function validateOTPFromDB(t, p, c, type="default") { 
-  return phpRequest('', { action: 'validate_otp', tenant_id: t, recipient: p, code: c, type }); 
+
+async function validateOTPFromDB(tenantId, phone, code, type = "default") {
+  return phpRequest({ action: 'validate_otp', tenant_id: tenantId, recipient: phone, code, type });
 }
-async function loadSessionFromDB(t) { 
-  const r = await phpRequest('', { action: 'load_session', tenant_id: t }); 
-  return r.success && r.data ? r.data : null; 
+
+async function loadSessionFromDB(tenantId) {
+  const res = await phpRequest({ action: 'load_session', tenant_id: tenantId });
+  return res.success && res.data ? res.data : null;
 }
-async function saveSessionToDB(t, creds) { 
-  await phpRequest('', { action: 'save_session', tenant_id: t, session_data: creds }); 
+
+async function saveSessionToDB(tenantId, creds) {
+  await phpRequest({ action: 'save_session', tenant_id: tenantId, session_data: creds });
 }
 
 // ====================== WHATSAPP ======================
@@ -119,17 +123,19 @@ async function connectWhatsApp(tenantId) {
         sd.qrBase64 = await qrcode.toDataURL(qr, { width: 300, margin: 2 });
         sd.status = "qr_pending";
         broadcastSSE(tid, { type: "qr", qr: sd.qrBase64 });
+        console.log(`📱 QR Code généré pour tenant ${tid}`);
       }
       if (connection === "open") {
         sd.status = "connected";
         sd.qrBase64 = null;
         broadcastSSE(tid, { type: "connected" });
-        console.log(`✅ [WA] Tenant ${tid} connecté`);
+        console.log(`✅ [WA] Tenant ${tid} CONNECTÉ`);
       }
       if (connection === "close") {
         broadcastSSE(tid, { type: "disconnected" });
-        if (lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut)
+        if (lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut) {
           setTimeout(() => connectWhatsApp(tid), 12000);
+        }
       }
     });
   } catch (e) { console.error(`[WA ${tid}]`, e.message); }
@@ -148,7 +154,10 @@ async function sendWA(tenantId, phone, text) {
     const jid = phone.replace(/\D/g, "") + "@s.whatsapp.net";
     await sd.sock.sendMessage(jid, { text });
     return true;
-  } catch (e) { console.error("[sendWA]", e.message); return false; }
+  } catch (e) { 
+    console.error("[sendWA]", e.message); 
+    return false; 
+  }
 }
 
 function broadcastSSE(tenantId, data) {
@@ -174,7 +183,7 @@ async function startServer() {
   };
 
   app.get("/", (_, res) => res.send(dashboardHTML));
-  app.get("/health", (_, res) => res.json({ status: "ok", version: "3.3.5" }));
+  app.get("/health", (_, res) => res.json({ status: "ok", version: "3.3.5", mode: "full" }));
   app.get("/status", (_, res) => {
     const list = {};
     sessions.forEach((sd, id) => list[id] = { status: sd.status });
@@ -195,18 +204,72 @@ async function startServer() {
     req.on("close", () => sseClients.get(tid)?.delete(res));
   });
 
-  // === TOUTES LES ROUTES ===
-  app.post("/generate-otp", auth, async (req, res) => { /* ... */ });
-  app.post("/validate-otp", auth, async (req, res) => { /* ... */ });
-  app.post("/send-message", auth, async (req, res) => { /* ... */ });
-  app.post("/send-magic", auth, async (req, res) => { /* ... */ });
-  app.post("/send-scan-notification", auth, async (req, res) => { /* ... */ });
-  app.post("/send-sos-alert", auth, async (req, res) => { /* ... */ });
-  app.post("/notify-subscription", auth, async (req, res) => { /* ... */ });
+  // ====================== TOUTES LES ROUTES ======================
+  app.post("/generate-otp", auth, async (req, res) => {
+    const { phone, tenant_id = 1, type = "default" } = req.body;
+    if (!phone) return res.status(400).json({ error: "phone requis" });
+
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    await saveOTP(tenant_id, phone, code, type);
+    await sendWA(tenant_id, phone, `Votre code Wise OS est : ${code}`);
+
+    res.json({ success: true, code });
+  });
+
+  app.post("/validate-otp", auth, async (req, res) => {
+    const { phone, code, context = "default", tenant_id = 1 } = req.body;
+    if (!phone || !code) return res.status(400).json({ error: "phone et code requis" });
+
+    const result = await validateOTPFromDB(tenant_id, phone, code, context);
+    res.json(result);
+  });
+
+  app.post("/send-message", auth, async (req, res) => {
+    const { phone, message, tenant_id = 1 } = req.body;
+    if (!phone || !message) return res.status(400).json({ error: "phone et message requis" });
+    const sent = await sendWA(tenant_id, phone, message);
+    res.json({ success: sent });
+  });
+
+  app.post("/send-magic", auth, async (req, res) => {
+    const { email, link, name = "" } = req.body;
+    if (!email || !link) return res.status(400).json({ error: "email et link requis" });
+
+    const html = `<h2>Bonjour ${name},</h2><p>Votre lien de connexion :</p><a href="${link}">Se connecter</a>`;
+    await transporter.sendMail({
+      from: `"Wise OS" <no-reply@wisedesign.pro>`,
+      to: email,
+      subject: "Votre Magic Link - Wise OS",
+      html
+    });
+
+    res.json({ success: true, message: "Magic link envoyé" });
+  });
+
+  app.post("/send-scan-notification", auth, async (req, res) => {
+    const { phone, name = "", action = "validation", tenant_id = 1 } = req.body;
+    const message = `✅ ${action} enregistré : ${name}`;
+    const sent = await sendWA(tenant_id, phone, message);
+    res.json({ success: true, whatsapp: sent });
+  });
+
+  app.post("/send-sos-alert", auth, async (req, res) => {
+    const { phone, patient_name = "Patient", blood_type = "?", allergies = "?" } = req.body;
+    const message = `🚨 SOS MÉDICAL\nPatient: ${patient_name}\nGroupe sanguin: ${blood_type}\nAllergies: ${allergies}`;
+    const sent = await sendWA(1, phone, message);
+    res.json({ success: true, whatsapp: sent });
+  });
+
+  app.post("/notify-subscription", auth, async (req, res) => {
+    const { phone, amount = 0, currency = "XAF" } = req.body;
+    const message = `🎉 Abonnement Pro activé ! ${amount} ${currency} - Merci pour votre confiance !`;
+    const sent = await sendWA(1, phone, message);
+    res.json({ success: true, whatsapp: sent });
+  });
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Wise OS v3.3.5 FULL démarré sur port ${PORT}`);
-    setTimeout(() => connectWhatsApp(1), 8000);
+    console.log(`🚀 Wise OS v3.3.5 FULL EXHAUSTIVE démarré sur port ${PORT}`);
+    setTimeout(() => connectWhatsApp(1), 6000);
   });
 }
 
