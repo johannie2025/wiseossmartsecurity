@@ -1,7 +1,6 @@
 /**
- * WISE OS UNIFIED — server.js v3.3.5 FULL PRODUCTION
- * Baileys + QR Code + Nodemailer + PHP Proxy MySQL complet
- * Aligné avec index.php (/lib/db)
+ * WISE OS UNIFIED — server.js v3.3.5 PRODUCTION COMPLETE
+ * Baileys + QR Code + Nodemailer + Toutes les routes + PHP Proxy
  */
 
 import express    from "express";
@@ -39,9 +38,9 @@ const AUTH_DIR = './wa_auth';
 
 if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true });
 
-// ====================== NODEMAILER ======================
+// ====================== NODEMAILER (wiseos@wisedesign.pro) ======================
 const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || "smtp.gmail.com",
+  host: "smtp.gmail.com",
   port: 587,
   secure: false,
   auth: {
@@ -50,12 +49,10 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-// ====================== PHP PROXY (MySQL) ======================
+// ====================== PHP PROXY ======================
 async function phpRequest(payload = {}) {
   try {
     const url = `${PHP_BACKEND.replace(/\/$/, '')}/lib/db`;
-    console.log(`[PHP Proxy] → ${url} | action=${payload.action}`);
-
     const res = await fetch(url, {
       method: 'POST',
       headers: {
@@ -64,20 +61,15 @@ async function phpRequest(payload = {}) {
       },
       body: JSON.stringify(payload)
     });
-
     const text = await res.text();
-    try {
-      return JSON.parse(text);
-    } catch {
-      return { success: false, raw: text };
-    }
+    try { return JSON.parse(text); } catch { return { success: false }; }
   } catch (e) {
-    console.error(`[PHP Proxy] FAILED:`, e.message);
-    return { success: false, error: e.message };
+    console.error(`[PHP Proxy]`, e.message);
+    return { success: false };
   }
 }
 
-// ====================== DB FUNCTIONS ======================
+// DB Functions
 async function saveOTP(tenantId, phone, code, type = "default") {
   return phpRequest({ action: 'save_otp', tenant_id: tenantId, recipient: phone, code, type });
 }
@@ -241,9 +233,9 @@ async function startServer() {
     const { email, link, name = "" } = req.body;
     if (!email || !link) return res.status(400).json({ error: "email et link requis" });
 
-    const html = `<h2>Bonjour ${name},</h2><p>Cliquez ici pour vous connecter :</p><a href="${link}">Se connecter</a>`;
+    const html = `<h2>Bonjour ${name},</h2><p>Cliquez sur le lien pour vous connecter :</p><a href="${link}">Se connecter à Wise OS</a>`;
     await transporter.sendMail({
-      from: `"Wise OS" <no-reply@wisedesign.pro>`,
+      from: '"Wise OS" <wiseos@wisedesign.pro>',
       to: email,
       subject: "Votre Magic Link - Wise OS",
       html
