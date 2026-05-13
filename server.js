@@ -1,7 +1,6 @@
 /**
- * WISE OS UNIFIED — server.js v3.3.5 TEMPORARY STORAGE MODE
- * Utilise uniquement le stockage temporaire de Render (./wa_auth)
- * PHP Proxy désactivé pour tests rapides
+ * WISE OS UNIFIED — server.js v3.3.5 TEMPORARY STORAGE
+ * Mode Render (stockage local) - Sans PHP Proxy
  */
 
 import express    from "express";
@@ -51,6 +50,7 @@ const transporter = nodemailer.createTransport({
 // ====================== WHATSAPP ======================
 async function connectWhatsApp(tenantId) {
   const tid = String(tenantId || 1);
+  
   if (sessions.has(tid)) {
     const old = sessions.get(tid);
     if (old?.sock?.end) try { old.sock.end(); } catch (_) {}
@@ -58,6 +58,8 @@ async function connectWhatsApp(tenantId) {
   }
 
   try {
+    console.log(`[WA] Connexion en cours pour tenant ${tid}...`);
+
     const { state, saveCreds } = await useMultiFileAuthState(`${AUTH_DIR}/${tid}`);
 
     const sock = makeWASocket({
@@ -84,34 +86,41 @@ async function connectWhatsApp(tenantId) {
         sd.status = "connected";
         sd.qrBase64 = null;
         broadcastSSE(tid, { type: "connected" });
-        console.log(`✅ [WA] Tenant ${tid} CONNECTÉ`);
+        console.log(`✅ [WA] Tenant ${tid} CONNECTÉ AVEC SUCCÈS`);
       }
       if (connection === "close") {
         broadcastSSE(tid, { type: "disconnected" });
         if (lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut) {
-          setTimeout(() => connectWhatsApp(tid), 12000);
+          setTimeout(() => connectWhatsApp(tid), 10000);
         }
       }
     });
-  } catch (e) { console.error(`[WA ${tid}]`, e.message); }
+  } catch (e) {
+    console.error(`[WA ${tid}] Erreur:`, e.message);
+  }
 }
 
 async function sendWA(tenantId, phone, text) {
   const tid = String(tenantId || 1);
   let sd = sessions.get(tid);
+
   if (!sd || sd.status !== "connected") {
+    console.log(`[WA] Session ${tid} non connectée, tentative de reconnexion...`);
     await connectWhatsApp(tid);
-    await delay(3500);
+    await delay(4000);
     sd = sessions.get(tid);
   }
+
   if (!sd?.sock) return false;
+
   try {
     const jid = phone.replace(/\D/g, "") + "@s.whatsapp.net";
     await sd.sock.sendMessage(jid, { text });
+    console.log(`📤 Message envoyé à ${phone}`);
     return true;
-  } catch (e) { 
-    console.error("[sendWA]", e.message); 
-    return false; 
+  } catch (e) {
+    console.error("[sendWA]", e.message);
+    return false;
   }
 }
 
@@ -132,11 +141,6 @@ async function startServer() {
 
   app.get("/", (_, res) => res.send(dashboardHTML));
   app.get("/health", (_, res) => res.json({ status: "ok", version: "3.3.5", mode: "temporary_storage" }));
-  app.get("/status", (_, res) => {
-    const list = {};
-    sessions.forEach((sd, id) => list[id] = { status: sd.status });
-    res.json({ version: "3.3.5", activeSessions: sessions.size, sessions: list });
-  });
 
   app.get("/connect", (req, res) => {
     const tid = String(req.query.tenant_id || 1);
@@ -152,15 +156,15 @@ async function startServer() {
     req.on("close", () => sseClients.get(tid)?.delete(res));
   });
 
-  // ====================== ROUTES ======================
+  // Routes principales
   app.post("/generate-otp", async (req, res) => {
     const { phone, tenant_id = 1 } = req.body;
     if (!phone) return res.status(400).json({ error: "phone requis" });
 
     const code = String(Math.floor(100000 + Math.random() * 900000));
-    await sendWA(tenant_id, phone, `Votre code Wise OS est : ${code}`);
+    const sent = await sendWA(tenant_id, phone, `Votre code Wise OS est : ${code}`);
 
-    res.json({ success: true, code, note: "Stockage temporaire actif" });
+    res.json({ success: true, code, sent });
   });
 
   app.post("/send-message", async (req, res) => {
@@ -170,45 +174,9 @@ async function startServer() {
     res.json({ success: sent });
   });
 
-  app.post("/send-magic", async (req, res) => {
-    const { email, link, name = "" } = req.body;
-    if (!email || !link) return res.status(400).json({ error: "email et link requis" });
-
-    const html = `<h2>Bonjour ${name},</h2><p>Cliquez ici :</p><a href="${link}">Se connecter</a>`;
-    await transporter.sendMail({
-      from: `"Wise OS" <no-reply@wisedesign.pro>`,
-      to: email,
-      subject: "Votre Magic Link",
-      html
-    });
-
-    res.json({ success: true });
-  });
-
-  app.post("/send-scan-notification", async (req, res) => {
-    const { phone, name = "", action = "validation", tenant_id = 1 } = req.body;
-    const message = `✅ ${action} enregistré : ${name}`;
-    const sent = await sendWA(tenant_id, phone, message);
-    res.json({ success: true, whatsapp: sent });
-  });
-
-  app.post("/send-sos-alert", async (req, res) => {
-    const { phone, patient_name = "Patient", blood_type = "?", allergies = "?" } = req.body;
-    const message = `🚨 SOS MÉDICAL\nPatient: ${patient_name}\nGroupe sanguin: ${blood_type}\nAllergies: ${allergies}`;
-    const sent = await sendWA(1, phone, message);
-    res.json({ success: true, whatsapp: sent });
-  });
-
-  app.post("/notify-subscription", async (req, res) => {
-    const { phone, amount = 0, currency = "XAF" } = req.body;
-    const message = `🎉 Abonnement Pro activé ! ${amount} ${currency} - Merci !`;
-    const sent = await sendWA(1, phone, message);
-    res.json({ success: true, whatsapp: sent });
-  });
-
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Wise OS v3.3.5 TEMPORARY STORAGE démarré sur port ${PORT}`);
-    setTimeout(() => connectWhatsApp(1), 4000);
+    console.log(`🚀 Wise OS Temporary Storage Mode démarré sur port ${PORT}`);
+    setTimeout(() => connectWhatsApp(1), 3000);
   });
 }
 
