@@ -1,7 +1,6 @@
 /**
  * WISE OS UNIFIED — server.js v3.3.5 FULL EXHAUSTIVE
- * Toutes les fonctionnalités + Nodemailer + Baileys + PHP Proxy (/lib/db)
- * Optimisé Render + Logs détaillés
+ * Toutes fonctionnalités + Nodemailer + Baileys + Debug Render
  */
 
 import express    from "express";
@@ -28,11 +27,10 @@ let makeWASocket, useMultiFileAuthState, DisconnectReason, delay;
 
 // ====================== CONFIG ======================
 const PORT = process.env.PORT || 10000;
-const API_KEY = process.env.NODE_API_KEY;
 const PHP_BACKEND = process.env.PHP_BACKEND_URL || "https://wisedesign.pro/wiseos/";
 
 console.log(`[INFO] PHP Backend: ${PHP_BACKEND}`);
-console.log(`[INFO] NODE_SECRET présent: ${!!process.env.NODE_SECRET}`);
+console.log(`[INFO] NODE_SECRET: ${process.env.NODE_SECRET ? '✅ Présent' : '❌ Absent'}`);
 
 const logger = pino({ level: 'silent' });
 
@@ -53,11 +51,14 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-// ====================== PHP PROXY ======================
+// ====================== PHP PROXY (avec debug) ======================
 async function phpRequest(payload = {}) {
   try {
     const url = `${PHP_BACKEND.replace(/\/$/, '')}/lib/db`;
     console.log(`[PHP Proxy] → ${url} | action=${payload.action}`);
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
 
     const res = await fetch(url, {
       method: 'POST',
@@ -65,9 +66,11 @@ async function phpRequest(payload = {}) {
         'Content-Type': 'application/json',
         'X-Node-Secret': process.env.NODE_SECRET || 'default_secret'
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+      signal: controller.signal
     });
 
+    clearTimeout(timeout);
     const text = await res.text();
     console.log(`[PHP Proxy] ← Status: ${res.status}`);
 
@@ -77,12 +80,12 @@ async function phpRequest(payload = {}) {
       return { success: false, raw: text };
     }
   } catch (e) {
-    console.error(`[PHP Proxy] CRITICAL FETCH FAILED:`, e.message);
+    console.error(`[PHP Proxy] CRITICAL FAILED:`, e.message);
     return { success: false, error: e.message };
   }
 }
 
-// ====================== DB PROXY ======================
+// ====================== DB FUNCTIONS ======================
 async function saveOTP(tenantId, phone, code, type = "default") {
   return phpRequest({ action: 'save_otp', tenant_id: tenantId, recipient: phone, code, type });
 }
@@ -247,15 +250,15 @@ async function startServer() {
     const { email, link, name = "" } = req.body;
     if (!email || !link) return res.status(400).json({ error: "email et link requis" });
 
-    const html = `<h2>Bonjour ${name},</h2><p>Cliquez sur le lien pour vous connecter :</p><a href="${link}">Se connecter à Wise OS</a>`;
+    const html = `<h2>Bonjour ${name},</h2><p>Cliquez ici pour vous connecter :</p><a href="${link}">Connexion Wise OS</a>`;
     await transporter.sendMail({
       from: `"Wise OS" <no-reply@wisedesign.pro>`,
       to: email,
-      subject: "Votre lien de connexion - Wise OS",
+      subject: "Votre Magic Link - Wise OS",
       html
     });
 
-    res.json({ success: true, message: "Magic link envoyé par email" });
+    res.json({ success: true });
   });
 
   app.post("/send-scan-notification", auth, async (req, res) => {
@@ -281,7 +284,7 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Wise OS v3.3.5 FULL EXHAUSTIVE démarré sur port ${PORT}`);
-    setTimeout(() => connectWhatsApp(1), 6000);
+    setTimeout(() => connectWhatsApp(1), 5000);
   });
 }
 
