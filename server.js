@@ -1,7 +1,7 @@
 /**
  * WISE OS UNIFIED — server.js v3.3.5 FULL EXHAUSTIVE
  * Toutes les fonctionnalités + Nodemailer + Baileys + PHP Proxy (/lib/db)
- * Optimisé Render (port detection + keep-alive)
+ * Optimisé Render + Logs détaillés
  */
 
 import express    from "express";
@@ -31,6 +31,9 @@ const PORT = process.env.PORT || 10000;
 const API_KEY = process.env.NODE_API_KEY;
 const PHP_BACKEND = process.env.PHP_BACKEND_URL || "https://wisedesign.pro/wiseos/";
 
+console.log(`[INFO] PHP Backend: ${PHP_BACKEND}`);
+console.log(`[INFO] NODE_SECRET présent: ${!!process.env.NODE_SECRET}`);
+
 const logger = pino({ level: 'silent' });
 
 const sessions = new Map();
@@ -50,10 +53,12 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-// ====================== PHP PROXY (aligné avec index.php) ======================
+// ====================== PHP PROXY ======================
 async function phpRequest(payload = {}) {
   try {
     const url = `${PHP_BACKEND.replace(/\/$/, '')}/lib/db`;
+    console.log(`[PHP Proxy] → ${url} | action=${payload.action}`);
+
     const res = await fetch(url, {
       method: 'POST',
       headers: {
@@ -62,15 +67,22 @@ async function phpRequest(payload = {}) {
       },
       body: JSON.stringify(payload)
     });
+
     const text = await res.text();
-    try { return JSON.parse(text); } catch { return { success: false, raw: text }; }
+    console.log(`[PHP Proxy] ← Status: ${res.status}`);
+
+    try {
+      return JSON.parse(text);
+    } catch {
+      return { success: false, raw: text };
+    }
   } catch (e) {
-    console.error(`[PHP Proxy] Error:`, e.message);
+    console.error(`[PHP Proxy] CRITICAL FETCH FAILED:`, e.message);
     return { success: false, error: e.message };
   }
 }
 
-// ====================== DB FUNCTIONS ======================
+// ====================== DB PROXY ======================
 async function saveOTP(tenantId, phone, code, type = "default") {
   return phpRequest({ action: 'save_otp', tenant_id: tenantId, recipient: phone, code, type });
 }
@@ -85,7 +97,7 @@ async function loadSessionFromDB(tenantId) {
 }
 
 async function saveSessionToDB(tenantId, creds) {
-  await phpRequest({ action: 'save_session', tenant_id: tenantId, session_data: creds });
+  return phpRequest({ action: 'save_session', tenant_id: tenantId, session_data: creds });
 }
 
 // ====================== WHATSAPP ======================
@@ -235,15 +247,15 @@ async function startServer() {
     const { email, link, name = "" } = req.body;
     if (!email || !link) return res.status(400).json({ error: "email et link requis" });
 
-    const html = `<h2>Bonjour ${name},</h2><p>Votre lien de connexion :</p><a href="${link}">Se connecter</a>`;
+    const html = `<h2>Bonjour ${name},</h2><p>Cliquez sur le lien pour vous connecter :</p><a href="${link}">Se connecter à Wise OS</a>`;
     await transporter.sendMail({
       from: `"Wise OS" <no-reply@wisedesign.pro>`,
       to: email,
-      subject: "Votre Magic Link - Wise OS",
+      subject: "Votre lien de connexion - Wise OS",
       html
     });
 
-    res.json({ success: true, message: "Magic link envoyé" });
+    res.json({ success: true, message: "Magic link envoyé par email" });
   });
 
   app.post("/send-scan-notification", auth, async (req, res) => {
