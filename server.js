@@ -1,6 +1,6 @@
 /**
  * WISE OS UNIFIED — server.js v3.3.5 PRODUCTION COMPLETE
- * Baileys + QR Code + Nodemailer + Toutes les routes + PHP Proxy
+ * Baileys + QR + Nodemailer + PHP Proxy MySQL + Toutes routes
  */
 
 import express    from "express";
@@ -27,7 +27,6 @@ let makeWASocket, useMultiFileAuthState, DisconnectReason, delay;
 
 // ====================== CONFIG ======================
 const PORT = process.env.PORT || 10000;
-const API_KEY = process.env.NODE_API_KEY;
 const PHP_BACKEND = process.env.PHP_BACKEND_URL || "https://wisedesign.pro/wiseos/";
 
 const logger = pino({ level: 'silent' });
@@ -38,7 +37,7 @@ const AUTH_DIR = './wa_auth';
 
 if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true });
 
-// ====================== NODEMAILER (wiseos@wisedesign.pro) ======================
+// ====================== NODEMAILER ======================
 const transporter = nodemailer.createTransport({
   host: "smtp.gmail.com",
   port: 587,
@@ -69,7 +68,7 @@ async function phpRequest(payload = {}) {
   }
 }
 
-// DB Functions
+// ====================== DB FUNCTIONS ======================
 async function saveOTP(tenantId, phone, code, type = "default") {
   return phpRequest({ action: 'save_otp', tenant_id: tenantId, recipient: phone, code, type });
 }
@@ -182,11 +181,6 @@ async function startServer() {
 
   app.get("/", (_, res) => res.send(dashboardHTML));
   app.get("/health", (_, res) => res.json({ status: "ok", version: "3.3.5" }));
-  app.get("/status", (_, res) => {
-    const list = {};
-    sessions.forEach((sd, id) => list[id] = { status: sd.status });
-    res.json({ version: "3.3.5", activeSessions: sessions.size, sessions: list });
-  });
 
   app.get("/connect", (req, res) => {
     const tid = String(req.query.tenant_id || 1);
@@ -202,7 +196,7 @@ async function startServer() {
     req.on("close", () => sseClients.get(tid)?.delete(res));
   });
 
-  // ====================== TOUTES LES ROUTES ======================
+  // ====================== ROUTES ======================
   app.post("/generate-otp", auth, async (req, res) => {
     const { phone, tenant_id = 1, type = "default" } = req.body;
     if (!phone) return res.status(400).json({ error: "phone requis" });
@@ -233,7 +227,7 @@ async function startServer() {
     const { email, link, name = "" } = req.body;
     if (!email || !link) return res.status(400).json({ error: "email et link requis" });
 
-    const html = `<h2>Bonjour ${name},</h2><p>Cliquez sur le lien pour vous connecter :</p><a href="${link}">Se connecter à Wise OS</a>`;
+    const html = `<h2>Bonjour ${name},</h2><p>Cliquez ici :</p><a href="${link}">Se connecter</a>`;
     await transporter.sendMail({
       from: '"Wise OS" <wiseos@wisedesign.pro>',
       to: email,
