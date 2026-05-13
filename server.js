@@ -1,6 +1,7 @@
 /**
- * WISE OS UNIFIED — server.js v3.3.5 FULL EXHAUSTIVE
- * Toutes fonctionnalités + Nodemailer + Baileys + Debug Render
+ * WISE OS UNIFIED — server.js v3.3.5 TEMPORARY STORAGE MODE
+ * Utilise uniquement le stockage temporaire de Render (./wa_auth)
+ * PHP Proxy désactivé pour tests rapides
  */
 
 import express    from "express";
@@ -27,10 +28,6 @@ let makeWASocket, useMultiFileAuthState, DisconnectReason, delay;
 
 // ====================== CONFIG ======================
 const PORT = process.env.PORT || 10000;
-const PHP_BACKEND = process.env.PHP_BACKEND_URL || "https://wisedesign.pro/wiseos/";
-
-console.log(`[INFO] PHP Backend: ${PHP_BACKEND}`);
-console.log(`[INFO] NODE_SECRET: ${process.env.NODE_SECRET ? '✅ Présent' : '❌ Absent'}`);
 
 const logger = pino({ level: 'silent' });
 
@@ -51,58 +48,6 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-// ====================== PHP PROXY (avec debug) ======================
-async function phpRequest(payload = {}) {
-  try {
-    const url = `${PHP_BACKEND.replace(/\/$/, '')}/lib/db`;
-    console.log(`[PHP Proxy] → ${url} | action=${payload.action}`);
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
-
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Node-Secret': process.env.NODE_SECRET || 'default_secret'
-      },
-      body: JSON.stringify(payload),
-      signal: controller.signal
-    });
-
-    clearTimeout(timeout);
-    const text = await res.text();
-    console.log(`[PHP Proxy] ← Status: ${res.status}`);
-
-    try {
-      return JSON.parse(text);
-    } catch {
-      return { success: false, raw: text };
-    }
-  } catch (e) {
-    console.error(`[PHP Proxy] CRITICAL FAILED:`, e.message);
-    return { success: false, error: e.message };
-  }
-}
-
-// ====================== DB FUNCTIONS ======================
-async function saveOTP(tenantId, phone, code, type = "default") {
-  return phpRequest({ action: 'save_otp', tenant_id: tenantId, recipient: phone, code, type });
-}
-
-async function validateOTPFromDB(tenantId, phone, code, type = "default") {
-  return phpRequest({ action: 'validate_otp', tenant_id: tenantId, recipient: phone, code, type });
-}
-
-async function loadSessionFromDB(tenantId) {
-  const res = await phpRequest({ action: 'load_session', tenant_id: tenantId });
-  return res.success && res.data ? res.data : null;
-}
-
-async function saveSessionToDB(tenantId, creds) {
-  return phpRequest({ action: 'save_session', tenant_id: tenantId, session_data: creds });
-}
-
 // ====================== WHATSAPP ======================
 async function connectWhatsApp(tenantId) {
   const tid = String(tenantId || 1);
@@ -113,9 +58,7 @@ async function connectWhatsApp(tenantId) {
   }
 
   try {
-    const saved = await loadSessionFromDB(tid);
     const { state, saveCreds } = await useMultiFileAuthState(`${AUTH_DIR}/${tid}`);
-    if (saved) Object.assign(state.creds, saved);
 
     const sock = makeWASocket({
       auth: state,
@@ -128,10 +71,7 @@ async function connectWhatsApp(tenantId) {
     const sd = { sock, status: "connecting", qrBase64: null };
     sessions.set(tid, sd);
 
-    sock.ev.on("creds.update", async () => {
-      await saveCreds();
-      await saveSessionToDB(tid, state.creds);
-    });
+    sock.ev.on("creds.update", saveCreds);
 
     sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
       if (qr) {
@@ -190,15 +130,8 @@ async function startServer() {
   app.use(cors({ origin: "*" }));
   app.use(express.json({ limit: "10mb" }));
 
-  const auth = (req, res, next) => {
-    if (!API_KEY) return next();
-    const key = req.headers["x-api-key"] || req.body?._api_key;
-    if (key !== API_KEY) return res.status(403).json({ error: "Unauthorized" });
-    next();
-  };
-
   app.get("/", (_, res) => res.send(dashboardHTML));
-  app.get("/health", (_, res) => res.json({ status: "ok", version: "3.3.5", mode: "full" }));
+  app.get("/health", (_, res) => res.json({ status: "ok", version: "3.3.5", mode: "temporary_storage" }));
   app.get("/status", (_, res) => {
     const list = {};
     sessions.forEach((sd, id) => list[id] = { status: sd.status });
@@ -219,72 +152,63 @@ async function startServer() {
     req.on("close", () => sseClients.get(tid)?.delete(res));
   });
 
-  // ====================== TOUTES LES ROUTES ======================
-  app.post("/generate-otp", auth, async (req, res) => {
-    const { phone, tenant_id = 1, type = "default" } = req.body;
+  // ====================== ROUTES ======================
+  app.post("/generate-otp", async (req, res) => {
+    const { phone, tenant_id = 1 } = req.body;
     if (!phone) return res.status(400).json({ error: "phone requis" });
 
     const code = String(Math.floor(100000 + Math.random() * 900000));
-    await saveOTP(tenant_id, phone, code, type);
     await sendWA(tenant_id, phone, `Votre code Wise OS est : ${code}`);
 
-    res.json({ success: true, code });
+    res.json({ success: true, code, note: "Stockage temporaire actif" });
   });
 
-  app.post("/validate-otp", auth, async (req, res) => {
-    const { phone, code, context = "default", tenant_id = 1 } = req.body;
-    if (!phone || !code) return res.status(400).json({ error: "phone et code requis" });
-
-    const result = await validateOTPFromDB(tenant_id, phone, code, context);
-    res.json(result);
-  });
-
-  app.post("/send-message", auth, async (req, res) => {
+  app.post("/send-message", async (req, res) => {
     const { phone, message, tenant_id = 1 } = req.body;
     if (!phone || !message) return res.status(400).json({ error: "phone et message requis" });
     const sent = await sendWA(tenant_id, phone, message);
     res.json({ success: sent });
   });
 
-  app.post("/send-magic", auth, async (req, res) => {
+  app.post("/send-magic", async (req, res) => {
     const { email, link, name = "" } = req.body;
     if (!email || !link) return res.status(400).json({ error: "email et link requis" });
 
-    const html = `<h2>Bonjour ${name},</h2><p>Cliquez ici pour vous connecter :</p><a href="${link}">Connexion Wise OS</a>`;
+    const html = `<h2>Bonjour ${name},</h2><p>Cliquez ici :</p><a href="${link}">Se connecter</a>`;
     await transporter.sendMail({
       from: `"Wise OS" <no-reply@wisedesign.pro>`,
       to: email,
-      subject: "Votre Magic Link - Wise OS",
+      subject: "Votre Magic Link",
       html
     });
 
     res.json({ success: true });
   });
 
-  app.post("/send-scan-notification", auth, async (req, res) => {
+  app.post("/send-scan-notification", async (req, res) => {
     const { phone, name = "", action = "validation", tenant_id = 1 } = req.body;
     const message = `✅ ${action} enregistré : ${name}`;
     const sent = await sendWA(tenant_id, phone, message);
     res.json({ success: true, whatsapp: sent });
   });
 
-  app.post("/send-sos-alert", auth, async (req, res) => {
+  app.post("/send-sos-alert", async (req, res) => {
     const { phone, patient_name = "Patient", blood_type = "?", allergies = "?" } = req.body;
     const message = `🚨 SOS MÉDICAL\nPatient: ${patient_name}\nGroupe sanguin: ${blood_type}\nAllergies: ${allergies}`;
     const sent = await sendWA(1, phone, message);
     res.json({ success: true, whatsapp: sent });
   });
 
-  app.post("/notify-subscription", auth, async (req, res) => {
+  app.post("/notify-subscription", async (req, res) => {
     const { phone, amount = 0, currency = "XAF" } = req.body;
-    const message = `🎉 Abonnement Pro activé ! ${amount} ${currency} - Merci pour votre confiance !`;
+    const message = `🎉 Abonnement Pro activé ! ${amount} ${currency} - Merci !`;
     const sent = await sendWA(1, phone, message);
     res.json({ success: true, whatsapp: sent });
   });
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Wise OS v3.3.5 FULL EXHAUSTIVE démarré sur port ${PORT}`);
-    setTimeout(() => connectWhatsApp(1), 5000);
+    console.log(`🚀 Wise OS v3.3.5 TEMPORARY STORAGE démarré sur port ${PORT}`);
+    setTimeout(() => connectWhatsApp(1), 4000);
   });
 }
 
