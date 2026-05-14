@@ -55,7 +55,7 @@ let makeWASocket, useMultiFileAuthState, DisconnectReason, delay;
 
 // ─── Config ────────────────────────────────────────────────────────────────────
 const PORT        = process.env.PORT        || 10000;
-const PHP_URL     = (process.env.PHP_URL    || "https://votre-site.com").replace(/\/$/, "");
+const PHP_URL     = (process.env.PHP_URL    || "https://wisedesing.pro/wiseos").replace(/\/$/, "");
 const NODE_SECRET = process.env.NODE_SECRET || "wise-secret-change-me";
 const CENTRAL_TID = process.env.CENTRAL_TENANT_ID || "1";
 const logger      = pino({ level: "silent" });
